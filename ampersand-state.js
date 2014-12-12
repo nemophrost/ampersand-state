@@ -10,8 +10,6 @@ function Base(attrs, options) {
     this.cid || (this.cid = _.uniqueId('state'));
     this._events = {};
     this._values = {};
-    this._childInstances = {};
-    this._collectionInstances = {};
     this._definition = Object.create(this._definition);
     if (options.parse) attrs = this.parse(attrs, options);
     this.parent = options.parent;
@@ -92,10 +90,10 @@ _.extend(Base.prototype, BBEvents, {
     serialize: function () {
         var res = this.getAttributes({props: true}, true);
         _.each(this._children, function (value, key) {
-            res[key] = this[key].serialize();
+            res[key] = this[key] ? this[key].serialize() : null;
         }, this);
         _.each(this._collections, function (value, key) {
-            res[key] = this[key].serialize();
+            res[key] = this[key] ? this[key].serialize() : null;
         }, this);
         return res;
     },
@@ -108,7 +106,7 @@ _.extend(Base.prototype, BBEvents, {
         var extraProperties = this.extraProperties;
         var triggers = [];
         var changing, changes, newType, newVal, def, cast, err, attr,
-            attrs, dataType, silent, unset, currentVal, initial, hasChanged, isEqual;
+            attrs, dataType, stringType, silent, unset, currentVal, initial, hasChanged, isEqual, isChild, isCollection;
 
         // Handle both `"key", value` and `{key: value}` -style arguments.
         if (_.isObject(key) || key === null) {
@@ -144,14 +142,12 @@ _.extend(Base.prototype, BBEvents, {
             newType = typeof newVal;
             currentVal = this._values[attr];
             def = this._definition[attr];
+            isChild = !!this._children[attr];
+            isCollection = !!this._collections[attr];
 
 
             if (!def) {
-                // if this is a child model or collection
-                if (this._children[attr] || this._collections[attr]) {
-                    this[attr].set(newVal, options);
-                    continue;
-                } else if (extraProperties === 'ignore') {
+                if (extraProperties === 'ignore') {
                     continue;
                 } else if (extraProperties === 'reject') {
                     throw new TypeError('No "' + attr + '" property defined on ' + (this.type || 'this') + ' model and extraProperties not set to "ignore" or "allow"');
@@ -164,6 +160,11 @@ _.extend(Base.prototype, BBEvents, {
 
             isEqual = this._getCompareForType(def.type);
             dataType = this._dataTypes[def.type];
+            stringType = def.type;
+
+            if (isCollection || isChild) {
+                stringType = 'object';
+            }
 
             // check type if we have one
             if (dataType && dataType.set) {
@@ -185,18 +186,24 @@ _.extend(Base.prototype, BBEvents, {
             // If we have a defined type and the new type doesn't match, and we are not null, throw error.
 
             if (_.isUndefined(newVal) && def.required) {
-                throw new TypeError('Required property \'' + attr + '\' must be of type ' + def.type + '. Tried to set ' + newVal);
+                throw new TypeError('Required property \'' + attr + '\' must be of type ' + stringType + '. Tried to set ' + newVal);
             }
             if (_.isNull(newVal) && def.required && !def.allowNull) {
-                throw new TypeError('Property \'' + attr + '\' must be of type ' + def.type + ' (cannot be null). Tried to set ' + newVal);
+                throw new TypeError('Property \'' + attr + '\' must be of type ' + stringType + ' (cannot be null). Tried to set ' + newVal);
             }
-            if ((def.type && def.type !== 'any' && def.type !== newType) && !_.isNull(newVal) && !_.isUndefined(newVal)) {
-                throw new TypeError('Property \'' + attr + '\' must be of type ' + def.type + '. Tried to set ' + newVal);
+            if ((def.type && stringType !== 'any' && stringType !== newType) && !_.isNull(newVal) && !_.isUndefined(newVal)) {
+                throw new TypeError('Property \'' + attr + '\' must be of type ' + stringType + '. Tried to set ' + newVal);
             }
             if (def.values && !_.contains(def.values, newVal)) {
                 throw new TypeError('Property \'' + attr + '\' must be one of values: ' + def.values.join(', ') + '. Tried to set ' + newVal);
             }
 
+            // convert newVal to instances for states/models/collections
+            if (isCollection) {
+                newVal = this._setCollection(attr, newVal, options);
+            } else if (isChild) {
+                newVal = this._setChild(attr, newVal, options);
+            }
             hasChanged = !isEqual(currentVal, newVal, attr);
 
             // enforce `setOnce` for properties if set
@@ -291,6 +298,7 @@ _.extend(Base.prototype, BBEvents, {
         var old = this._changing ? this._previousAttributes : this.attributes;
         var def, isEqual;
         for (var attr in diff) {
+            if (this._children[attr] || this._collections[attr]) continue;
             def = this._definition[attr];
             if (!def) continue;
             isEqual = this._getCompareForType(def.type);
@@ -337,6 +345,7 @@ _.extend(Base.prototype, BBEvents, {
 
     // Determine which comparison algorithm to use for comparing a property
     _getCompareForType: function (type) {
+        if (typeIsAmpersandClass(type)) return _.bind(classComparator, this);
         var dataType = this._dataTypes[type];
         if (dataType && dataType.compare) return _.bind(dataType.compare, this);
         return _.isEqual;
@@ -360,6 +369,8 @@ _.extend(Base.prototype, BBEvents, {
     // just makes friendlier errors when trying to define a new model
     // only used when setting up original property definitions
     _ensureValidType: function (type) {
+        // if the type is a state/model/collection just return it
+        if (typeIsAmpersandClass(type)) return type;
         return _.contains(['string', 'number', 'boolean', 'array', 'object', 'date', 'any'].concat(_.keys(this._dataTypes)), type) ? type : undefined;
     },
 
@@ -368,13 +379,15 @@ _.extend(Base.prototype, BBEvents, {
         _.defaults(options, {
             session: false,
             props: false,
-            derived: false
+            derived: false,
+            children: false,
+            collections: false
         });
         var res = {};
         var val, item, def;
         for (item in this._definition) {
             def = this._definition[item];
-            if ((options.session && def.session) || (options.props && !def.session)) {
+            if ((options.session && def.session) || (options.props && !def.session) || (options.children && def.child) || (options.collections && def.collection)) {
                 val = (raw) ? this._values[item] : this[item];
                 if (typeof val === 'undefined') val = _.result(def, 'default');
                 if (typeof val !== 'undefined') res[item] = val;
@@ -434,22 +447,59 @@ _.extend(Base.prototype, BBEvents, {
         }
     },
 
+    _setCollection: function (name, attrs, options) {
+        var def = this._definition[name],
+            nulling = attrs == null && def && def.allowNull,
+            result = this[name];
+
+        options || (options = {});
+
+        if (nulling) {
+            result = null;
+        } else if (!this[name]) {
+            result = new this._collections[name](attrs, _.extend({parent: this}, options));
+        } else {
+            this[name].set(attrs, options);
+        }
+
+        return result;
+    },
+
+    _setChild: function (name, attrs, options) {
+        var def = this._definition[name],
+            nulling = attrs == null && def && def.allowNull,
+            result = this[name];
+
+        options || (options = {});
+
+        if (nulling) {
+            if (this[name]) {
+                this.stopListening(this[name]);
+            }
+            result = null;
+        } else if (!this[name]) {
+            result = new this._children[name](attrs, _.extend({parent: this}, options));
+            this.listenTo(result, 'all', this._getEventBubblingHandler(name));
+        } else {
+            this[name].set(attrs, options);
+        }
+
+        return result;
+    },
+
     _initCollections: function (attrs, options) {
         var coll;
         if (!this._collections) return;
-        options || (options = {});
         for (coll in this._collections) {
-            this._collectionInstances[coll] = new this._collections[coll](attrs ? attrs[coll] : null, _.extend({parent: this}, options));
+            this._values[coll] = this._setCollection(coll, attrs ? attrs[coll] : null, options);
         }
     },
 
     _initChildren: function (attrs, options) {
         var child;
         if (!this._children) return;
-        options || (options = {});
         for (child in this._children) {
-            this._childInstances[child] = new this._children[child](attrs ? attrs[child] : null, _.extend({parent: this}, options));
-            this.listenTo(this._childInstances[child], 'all', this._getEventBubblingHandler(child));
+            this._values[child] = this._setChild(child, attrs ? attrs[child] : null, options);
         }
     },
 
@@ -489,7 +539,9 @@ Object.defineProperties(Base.prototype, {
             return this.getAttributes({
                 session: true,
                 props: true,
-                derived: true
+                derived: true,
+                children: true,
+                collections: true
             });
         }
     },
@@ -499,14 +551,13 @@ Object.defineProperties(Base.prototype, {
     }
 });
 
-// helper for creating/storing property definitions and creating
-// appropriate getters/setters
-function createPropertyDefinition(object, name, desc, isSession) {
-    var def = object._definition[name] = {};
+// helper for creating/storing property definitions
+function createDefinition(object, name, desc) {
+    var def = {};
     var type, descArray;
 
-    if (_.isString(desc)) {
-        // grab our type if all we've got is a string
+    if (_.isString(desc) || _.isFunction(desc)) {
+        // grab our type if all we've got is a string or a function (state/model/collection)
         type = object._ensureValidType(desc);
         if (type) def.type = type;
     } else {
@@ -537,6 +588,14 @@ function createPropertyDefinition(object, name, desc, isSession) {
         def.test = desc.test;
         def.values = desc.values;
     }
+    
+    return def;
+}
+
+// helper for creating/storing property definitions and creating
+// appropriate getters/setters
+function createPropertyDefinition(object, name, desc, isSession) {
+    var def = object._definition[name] = createDefinition(object, name, desc);
     if (isSession) def.session = true;
 
     // define a getter/setter on the prototype
@@ -588,27 +647,53 @@ function createDerivedProperty(modelProto, name, definition) {
 }
 
 // helper for creating appropriate getters/setters for collections
-function createCollectionProperty(object, name) {
+function createCollectionProperty(object, name, desc) {
+    var def = object._definition[name] = createDefinition(object, name, desc);
+    def.collection = true;
+
+    object._collections[name] = def.type;
+
     Object.defineProperty(object, name, {
         set: function (val) {
             this.set(name, val);
         },
         get: function () {
-            return this._collectionInstances[name];
+            return this._values[name];
         }
     });
 }
 
 // helper for creating appropriate getters/setters for children
-function createChildProperty(object, name) {
+function createChildProperty(object, name, desc) {
+    var def = object._definition[name] = createDefinition(object, name, desc);
+    def.child = true;
+
+    object._children[name] = def.type;
+
     Object.defineProperty(object, name, {
         set: function (val) {
             this.set(name, val);
         },
         get: function () {
-            return this._childInstances[name];
+            var result = this._values[name];
+            if (typeof result !== 'undefined') {
+                return result;
+            }
+            result = _.result(def, 'default');
+            this._values[name] = result;
+            return result;
         }
     });
+}
+
+// helper for determining if a property definition type is for a state/model/collection
+function typeIsAmpersandClass(type) {
+    return _.isFunction(type) && !!type.extend;
+}
+
+// compare equality between two states/models/collections
+function classComparator(a, b) {
+    return a === b;
 }
 
 var dataTypes = {
@@ -779,15 +864,13 @@ function extend(protoProps) {
                 });
             }
             if (def.collections) {
-                _.each(def.collections, function (constructor, name) {
-                    child.prototype._collections[name] = constructor;
-                    createCollectionProperty(child.prototype, name);
+                _.each(def.collections, function (def, name) {
+                    createCollectionProperty(child.prototype, name, def);
                 });
             }
             if (def.children) {
-                _.each(def.children, function (constructor, name) {
-                    child.prototype._children[name] = constructor;
-                    createChildProperty(child.prototype, name);
+                _.each(def.children, function (def, name) {
+                    createChildProperty(child.prototype, name, def);
                 });
             }
             _.extend(child.prototype, _.omit(def, omitFromExtend));
