@@ -480,6 +480,10 @@ _.extend(Base.prototype, BBEvents, {
         } else if (!this[name]) {
             result = new this._children[name](attrs, _.extend({parent: this}, options));
             this.listenTo(result, 'all', this._getEventBubblingHandler(name));
+        } else if (attrs && attrs.constructor === this._children[name]) {
+            this.stopListening(this[name]);
+            result = attrs;
+            this.listenTo(result, 'all', this._getEventBubblingHandler(name));
         } else {
             this[name].set(attrs, options);
         }
