@@ -468,6 +468,7 @@ _.extend(Base.prototype, BBEvents, {
     _setChild: function (name, attrs, options) {
         var def = this._definition[name],
             nulling = attrs == null && def && def.allowNull,
+            settingChildDirectly = attrs && attrs.constructor === this._children[name],
             result = this[name];
 
         options || (options = {});
@@ -477,12 +478,18 @@ _.extend(Base.prototype, BBEvents, {
                 this.stopListening(this[name]);
             }
             result = null;
-        } else if (!this[name]) {
-            result = new this._children[name](attrs, _.extend({parent: this}, options));
-            this.listenTo(result, 'all', this._getEventBubblingHandler(name));
-        } else if (attrs && attrs.constructor === this._children[name]) {
-            this.stopListening(this[name]);
-            result = attrs;
+        } else if (!this[name] || settingChildDirectly) {
+            if (this[name]) {
+                this.stopListening(this[name]);
+            }
+
+            if (settingChildDirectly) {
+                result = attrs;
+                result.parent = this;
+            } else {
+                result = new this._children[name](attrs, _.extend({parent: this}, options));
+            }
+
             this.listenTo(result, 'all', this._getEventBubblingHandler(name));
         } else {
             this[name].set(attrs, options);
