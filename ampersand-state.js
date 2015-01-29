@@ -87,13 +87,13 @@ _.extend(Base.prototype, BBEvents, {
 
     // Serialize is the inverse of `parse` it lets you massage data
     // on the way out. Before, sending to server, for example.
-    serialize: function () {
+    serialize: function (options) {
         var res = this.getAttributes({props: true}, true);
         _.each(this._children, function (value, key) {
-            res[key] = this[key] ? this[key].serialize() : null;
+            res[key] = this[key] ? this[key].serialize(options) : null;
         }, this);
         _.each(this._collections, function (value, key) {
-            res[key] = this[key] ? this[key].serialize() : null;
+            res[key] = this[key] ? this[key].serialize(options) : null;
         }, this);
         return res;
     },
@@ -308,8 +308,8 @@ _.extend(Base.prototype, BBEvents, {
         return changed;
     },
 
-    toJSON: function () {
-        return this.serialize();
+    toJSON: function (options) {
+        return this.serialize(options);
     },
 
     unset: function (attr, options) {
